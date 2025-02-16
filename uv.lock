@@ -147,6 +147,7 @@ dependencies = [
     { name = "more-itertools" },
     { name = "pandas" },
     { name = "pyarrow" },
+    { name = "pygtrie" },
     { name = "torch" },
 ]
 
@@ -164,6 +165,7 @@ requires-dist = [
     { name = "more-itertools", specifier = ">=10.6.0" },
     { name = "pandas", specifier = ">=2.2.3" },
     { name = "pyarrow", specifier = ">=19.0.0" },
+    { name = "pygtrie", specifier = ">=2.5.0" },
     { name = "torch", specifier = ">=2.6.0", index = "https://download.pytorch.org/whl/rocm6.2.4" },
 ]
 

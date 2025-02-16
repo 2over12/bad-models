@@ -5,6 +5,7 @@ from omegaconf import DictConfig
 import hydra
 from dataclasses import dataclass
 import json
+from pygtrie import PrefixSet
 
 UNKNOWN_TOKEN = "<UNK>"
 
@@ -85,7 +86,6 @@ def bpe_train(words: list[str], target_vocab_size: int) -> set[str]:
 
 @hydra.main(version_base=None, config_path="configs", config_name="config.yaml")
 def train_tokenizer_on_dataset(cfg: DictConfig):
-    print("here")
     df = dataset.get_train_dataset(cfg.dataset.slice_size)
     prompts: list[str]= df["question"] + df["answer"] 
     print(prompts)
@@ -96,6 +96,45 @@ def train_tokenizer_on_dataset(cfg: DictConfig):
     tokens =  bpe_train(list(ws), cfg.tokenizer.vocab_size)
     with open(cfg.tokenizer.dict, "w") as f:
         json.dump(list(tokens), f)
+
+
+class Tokenizer:
+    def __init__(self, tokens: list[str]):
+        self.trie = PrefixSet(tokens)
+
+    @staticmethod
+    def from_dict(cfg: DictConfig):
+        with open(cfg.tokenizer.dict, "r") as f:
+            return Tokenizer(json.load(f))
+
+    def get_tokens_for_wd(self, wd: str) -> list[str]:
+        total = []
+        curr_tok = ""
+        it = more_itertools.peekable(wd)
+        while it.peek(default=None) is not None:
+            tok = next(it)
+            curr_tok += tok
+            # in this case we restarted and are forced to UNK
+            if curr_tok not in self.trie:
+                is_UNK = True
+                while is_UNK:
+                    n = it.peek()
+                    is_UNK = n not in self.trie
+                    if is_UNK:
+                        next(it)
+                total.append(UNKNOWN_TOKEN)
+                curr_tok = ""
+                continue
+
+            nxt = it.peek()
+            if nxt is None or (curr_tok + nxt) not in self.trie:
+                total.append(curr_tok)
+                curr_tok = ""
+
+    def tokenize(self, input: str) -> list[str]:
+        normed = normalize(input)
+        wds = words(normed)
+        return [[tok for tok in self.get_tokens_for_wd(wd)] for wd in wds]
 
 if __name__ == "__main__":
     train_tokenizer_on_dataset()

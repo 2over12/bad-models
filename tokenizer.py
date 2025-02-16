@@ -1,7 +1,10 @@
 import pandas as pd
 import more_itertools
 import dataset
-
+from omegaconf import DictConfig
+import hydra
+from dataclasses import dataclass
+import json
 
 UNKNOWN_TOKEN = "<UNK>"
 
@@ -80,15 +83,19 @@ def bpe_train(words: list[str], target_vocab_size: int) -> set[str]:
     return vocab
 
 
-def train_tokenizer_on_dataset():
-    df = dataset.get_train_dataset()
-    prompts: list[str]= df["question"] + df["answer"]
-    prompts = prompts 
+@hydra.main(version_base=None, config_path="configs", config_name="config.yaml")
+def train_tokenizer_on_dataset(cfg: DictConfig):
+    print("here")
+    df = dataset.get_train_dataset(cfg.dataset.slice_size)
+    prompts: list[str]= df["question"] + df["answer"] 
+    print(prompts)
     ws: set[str] = set()
     for promp in prompts:
         ws.update(words(normalize(promp)))
     
-    return bpe_train(list(ws), 400)
+    tokens =  bpe_train(list(ws), cfg.tokenizer.vocab_size)
+    with open(cfg.tokenizer.dict, "w") as f:
+        json.dump(list(tokens), f)
 
 if __name__ == "__main__":
-    print(train_tokenizer_on_dataset())
+    train_tokenizer_on_dataset()

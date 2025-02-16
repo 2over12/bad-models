@@ -1,0 +1,20 @@
+[project]
+name = "bad-models"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "torch>=2.6.0",
+]
+
+
+[tool.uv.sources]
+torch = { index = "pytorch" }
+
+
+[[tool.uv.index]]
+# Optional name for the index.
+name = "pytorch"
+url = "https://download.pytorch.org/whl/rocm6.2.4"
+default = false

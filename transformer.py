@@ -50,6 +50,7 @@ class MultiHeadedAttention(nn.Module):
     def forward(self, X):
         # S, T, E
         dims = X.ndim
+        # TODO(Ian): make this easily scalable by batching.
         return torch.cat([m(X) for m in self.mods], dims-1)
 
 def main():

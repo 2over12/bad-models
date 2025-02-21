@@ -4,6 +4,8 @@ from torch.nn import Embedding
 from torch import nn
 import lightning as L
 import math
+from torch.utils.data import DataLoader
+
 class AttentionHead(nn.Module):
     def __init__(self, embedding_size: int):
         super().__init__()
@@ -29,13 +31,13 @@ class AttentionHead(nn.Module):
         norm_scores = torch.div(attn_scores, math.sqrt(self.embedding_size))
         # for each token's attention score null out future tokens
         to_mask_indices = torch.triu_indices(T,T,offset=1)
-        print(to_mask_indices)
+        #print(to_mask_indices)
         # TODO(Ian): Do something better here
         if dims > 2:
             norm_scores[:, to_mask_indices[0], to_mask_indices[1]] = -torch.inf
         else:
             norm_scores[to_mask_indices[0], to_mask_indices[1]] = -torch.inf 
-        print(norm_scores)
+        #print(norm_scores)
         # (T,T)
         attn_matrix = torch.softmax(norm_scores, dim=dims-2)
         #T,T * T,E
@@ -86,7 +88,7 @@ class Decoder(nn.Module):
         return activation
 
 class Model(nn.Module):
-    def __init__(self,  vocab_size, _max_seq_len: int, num_decoders, num_heads, 
+    def __init__(self,  vocab_size, num_decoders, num_heads, 
                  embedding_size, hidden_layer_factor: int,
                   bias: bool, dropout: float):
         super().__init__()
@@ -102,16 +104,46 @@ class Model(nn.Module):
         embs = self.embedding(X_idxs)
         for dec in self.decs:
             embs = dec(embs)
+        print(embs.shape)
         return self.classifier(self.norm(embs))
+
+class Trainable(L.LightningModule):
+    def __init__(self, vocab_size, num_decoders, num_heads, 
+                 embedding_size, hidden_layer_factor: int,
+                  bias: bool, dropout: float):
+        super().__init__()
+        self.mod = Model(vocab_size, num_decoders, num_heads, 
+                 embedding_size, hidden_layer_factor,
+                  bias, dropout)
+
+    # TODO(Ian): padding mask here
+    def training_step(self, batch, _idx):
+        x, y = batch
+        print(x.shape)
+        res = self.mod(x)
+        print(res.shape)
+
+        xres = res.view(res.shape[0]*res.shape[1], res.shape[2])
+        print(xres.shape)
+        yres = y.view((res.shape[0]*res.shape[1],))
+        print(yres.shape)
+        return torch.nn.functional.cross_entropy(xres, yres)
+
+
+    
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
+        return optimizer
+
 
 
 def main():
-    athd = Model(500, 500, 2, 2, 256, 4, False, .1)
+    athd = Trainable(500, 2, 2, 256, 4, False, .1)
     mat = torch.randint(0, 100, (5,10))
-    print(mat)
-    print(mat.shape)
-    X = athd.forward(mat)
-    print(X)
-    print(X.shape)
+    res = torch.randint(0,100, (5,10))
+    ldr = DataLoader(mat)
+    other = DataLoader(res)
+    trainer = L.Trainer()
+    trainer.fit(athd, train_dataloaders=(ldr, other))
 if __name__ == "__main__":
     main()

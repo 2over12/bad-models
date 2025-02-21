@@ -11,3 +11,4 @@ wheels/
 /tokens.txt
 
 outputs
+lightning_logs

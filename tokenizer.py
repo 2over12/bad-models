@@ -8,6 +8,7 @@ import json
 from pygtrie import PrefixSet
 
 UNKNOWN_TOKEN = "<UNK>"
+STOP_TOKEN = "<STOP>"
 
 def normalize(input: str):
     noleads = input.strip()
@@ -70,6 +71,7 @@ def merge_adjacent(pr: tuple[str,str], split_words: dict[str, list[str]]):
 def bpe_train(words: list[str], target_vocab_size: int) -> set[str]:
     vocab = base_tokens(words) 
     vocab.add(UNKNOWN_TOKEN)
+    vocab.add(STOP_TOKEN)
     split_words = {wd: [ch for ch in wd] for wd in words}
     word_freqs = compute_word_freqs(words)
     while len(vocab) < target_vocab_size:
@@ -101,6 +103,9 @@ def train_tokenizer_on_dataset(cfg: DictConfig):
 class Tokenizer:
     def __init__(self, tokens: list[str]):
         self.trie = PrefixSet(tokens)
+        self.tokens = sorted(tokens)
+        self.token_to_ind = dict([(tok, i) for i, tok in enumerate(self.tokens)])
+
 
     @staticmethod
     def from_dict(cfg: DictConfig):
@@ -135,6 +140,9 @@ class Tokenizer:
         normed = normalize(input)
         wds = words(normed)
         return [[tok for tok in self.get_tokens_for_wd(wd)] for wd in wds]
+
+    def token_index(self, tok: str) -> int | None:
+        return self.token_to_ind.get(tok, None)
 
 if __name__ == "__main__":
     train_tokenizer_on_dataset()

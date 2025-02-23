@@ -89,16 +89,36 @@ class Model(nn.Module):
                  embedding_size, hidden_layer_factor: int,
                   bias: bool, dropout: float):
         super().__init__()
+        self.embedding_size  = embedding_size
         self.embedding = nn.Embedding(vocab_size, embedding_size)
-        # TODO(Ian): do this
-        #self.abs_position_embedding = nn.Embedding()
+
         self.decs = [Decoder(num_heads, embedding_size, hidden_layer_factor,
                              bias, dropout) for _ in range(num_decoders)]
         self.norm = nn.LayerNorm(embedding_size)
         self.classifier = nn.Linear(embedding_size, vocab_size, bias)
 
-    def forward(self, X_idxs):
-        embs = self.embedding(X_idxs)
+    def pos_embeddings(self, positions: torch.Tensor):
+        # (B, T) we allow arbitrary positions in order to allow shifting pads etc
+        shp = positions.shape
+        embs = torch.zeros((shp[0] * shp[1], self.embedding_size))
+        
+        # only need half since 2k, 2k+1 collapse
+        inds = torch.arange(0, self.embedding_size//2)
+        denom = torch.pow(10_000, inds*2/self.embedding_size)
+        
+        # (B,T) (E//2)
+        posreps = positions.unsqueeze(-1).expand(-1, -1, self.embedding_size//2)
+        
+        evens = torch.sin(posreps.flatten(end_dim=1)/denom)
+        odds = torch.cos(posreps.flatten(end_dim=1)/denom)
+        embs[:, 0::2] = evens
+        embs[:, 1::2] = odds
+        return embs.view((shp[0], shp[1], self.embedding_size))
+
+
+    def forward(self, X_idxs_and_pos):
+        X_idxs, pos = X_idxs_and_pos
+        embs = self.embedding(X_idxs) + self.pos_embeddings(pos)
         for dec in self.decs:
             embs = dec(embs)
         classed = self.classifier(self.norm(embs))
@@ -256,14 +276,18 @@ def main():
     # athd = MultiHeadedAttention(2,E)
     # re_embedded = athd(mat)
     # print(re_embedded.shape)
-    athd = GRPOTraining(500, 2, 2, 256, 4, False, 5, Tokenizer([STOP_TOKEN]),
-                       max_tok_sq_len=20)
+    #athd = GRPOTraining(500, 2, 2, 256, 4, False, 5, Tokenizer([STOP_TOKEN]),
+    #                   max_tok_sq_len=20)
+    
+    tmodel = Model(500, 2, 2, 256, 4, True, 0.0)
     mat = torch.randint(0, 100, (10,5))
+    pos = torch.randint(0, 5, (10, 5))
+
     #res = torch.randint(0,100, (2, 5))
     #athd.training_step(mat, 1, training=False)
-    ldr = DataLoader(mat)
+    #ldr = DataLoader(mat)
     #other = DataLoader(res)
-    trainer = L.Trainer(detect_anomaly=False)
-    trainer.fit(athd, train_dataloaders=ldr)
+    #trainer = L.Trainer(detect_anomaly=False)
+    #trainer.fit(athd, train_dataloaders=ldr)
 if __name__ == "__main__":
     main()

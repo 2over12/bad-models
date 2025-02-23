@@ -7,54 +7,50 @@ import math
 from torch.utils.data import DataLoader
 from tokenizer import Tokenizer, STOP_TOKEN
 import copy
-class AttentionHead(nn.Module):
-    def __init__(self, embedding_size: int):
+
+class MultiHeadedAttention(nn.Module):
+    def __init__(self, num_heads: int, embedding_size):
         super().__init__()
         self.embedding_size = embedding_size
         self.Q = nn.Linear(embedding_size,embedding_size)
         self.K = nn.Linear(embedding_size,embedding_size)
         self.V = nn.Linear(embedding_size,embedding_size)
+        self.H = num_heads
+
+    def split_heads(self, X: torch.Tensor):
+        # S,T,E-> S,H,T E//H
+        return X.view((X.shape[0], X.shape[1], self.H, X.shape[2]//self.H)).transpose(1,2)
 
     def forward(self, X):
         # E: embedding size
         # T: seq size 
-        query = self.Q(X)
-        key = self.K(X)
-        value = self.V(X)
-        # (T, E) (E, T)
-        dims = X.ndim
+        query = self.split_heads(self.Q(X))
+        key =  self.split_heads(self.K(X))
+        value =  self.split_heads(self.V(X))
+        # (S,H,T,E//H) (S,H,E//H, T)
+        dims = query.ndim
         T_dim = dims-2
-        E_dim = dims-1
-        T = X.shape[T_dim]
-        invert_key = torch.transpose(key, T_dim, E_dim)
+        E_h_dim = dims-1
+        T = query.shape[T_dim]
+        invert_key = torch.transpose(key, T_dim, E_h_dim)
         
+        # We want (S, H, T, E//H)
+        # (S, H, E//H, T)
         attn_scores = torch.matmul(query, invert_key)
         norm_scores = torch.div(attn_scores, math.sqrt(self.embedding_size))
         # for each token's attention score null out future tokens
         to_mask_indices = torch.triu_indices(T,T,offset=1)
         #print(to_mask_indices)
-        # TODO(Ian): Do something better here
-        if dims > 2:
-            norm_scores[:, to_mask_indices[0], to_mask_indices[1]] = -torch.inf
-        else:
-            norm_scores[to_mask_indices[0], to_mask_indices[1]] = -torch.inf 
-        #print(norm_scores)
-        # (T,T)
+        norm_scores[:,:, to_mask_indices[0], to_mask_indices[1]] = -torch.inf
+
+        # (S, H, T,T)
         attn_matrix = torch.softmax(norm_scores, dim=dims-2)
-        #T,T * T,E
-        return torch.matmul(attn_matrix, value)
-
-
-class MultiHeadedAttention(nn.Module):
-    def __init__(self, num_heads: int, embedding_size):
-        super().__init__()
-        self.mods=[AttentionHead(embedding_size) for _ in range(num_heads)]
-
-    def forward(self, X):
-        # S, T, E
-        dims = X.ndim
-        # TODO(Ian): make this easily scalable by batching.
-        return torch.cat([m(X) for m in self.mods], dims-1)
+        # (S, H, T, T) * (S, H, T, E//T) - >(S, H, T, E//T)
+        values = torch.matmul(attn_matrix, value)
+        # flip the heads so that each head is next to it
+        cont = values.transpose(1,2)#.contiguous()
+        concats = cont.reshape(X.shape[0], T, self.embedding_size)
+        return concats
 
 class FeedForwardNetwork(nn.Module):
     def __init__(self, input: int, hidden_layer_factor: int, output: int, bias: bool, dropout: float):
@@ -74,7 +70,7 @@ class Decoder(nn.Module):
         super().__init__()
         self.embedding_size = embedding_size
         self.num_head = num_heads
-        self.output_size = self.num_head * self.embedding_size
+        self.output_size = self.embedding_size
         self.heads = MultiHeadedAttention(num_heads, embedding_size)
         self.pointwise_ff = FeedForwardNetwork(self.output_size, 
                                             hidden_layer_factor, 
@@ -237,10 +233,17 @@ class Trainable(L.LightningModule):
 
 
 def main():
+    # S = 1
+    # T = 3
+    # E = 10
+    # mat = torch.rand((S, T, E))
+    # athd = MultiHeadedAttention(2,E)
+    # re_embedded = athd(mat)
+    # print(re_embedded.shape)
     athd = GRPOTraining(500, 2, 2, 256, 4, False, 5, Tokenizer([STOP_TOKEN]),
-                        max_tok_sq_len=20)
+                       max_tok_sq_len=20)
     mat = torch.randint(0, 100, (1,5))
-    res = torch.randint(0,100, (2, 5))
+    #res = torch.randint(0,100, (2, 5))
     #athd.training_step(mat, 1)
     ldr = DataLoader(mat)
     #other = DataLoader(res)

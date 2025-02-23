@@ -135,34 +135,47 @@ class GRPOTraining(L.LightningModule):
         return torch.randint(0, 10, (1,), dtype=torch.float)
 
     def all_stopped(self, X: torch.Tensor) -> bool:
-        if self.max_tok_sq_len is not None and X.shape[1] >= self.max_tok_sq_len:
+        if self.max_tok_sq_len is not None and X.shape[2] >= self.max_tok_sq_len:
                 return True
 
         stop_ind = self.tokenizer.token_index(STOP_TOKEN)
-        tany = torch.any(torch.eq(X, stop_ind), 0)
+        tany = torch.any(torch.eq(X, stop_ind), 1)
         return not torch.all(torch.logical_not(tany))
     
+
+    def batch_tensor(self, X: torch.Tensor):
+        batched = X.view(X.shape[0] * X.shape[1], X.shape[2])
+        return batched
+
+
     def predictions(self, X: torch.Tensor):
-        preds = self.mod(X)[:, -1, :]
+        batched = self.batch_tensor(X)
+        # batch preds
+        # (G*B, T)
+        preds = self.mod(batched)[:, -1, :]
         selected = torch.multinomial(preds, 1)
-        return selected
+        shape_sel = selected.view(X.shape[0], X.shape[1], 1)
+        return shape_sel
    
+
     def seq_to_probs(self, X: torch.Tensor, start_len: int):
+        #X : (B, G, T)
+        batched = self.batch_tensor(X)
         # we have Q_0 ... Q_N, T_0 ... T_L
         # where start_len == N + 1 
         # so we want to subtract 1 to get the first token prob we consider as 
         # The next token T_0
         # we also do -1 to drop T_L since we dont have a next token
-        preds = self.mod(X)[:,start_len-1:-1,:]
+        preds = self.mod(batched)[:,start_len-1:-1,:]
         # now we select the next token index for each token
-        toks = X[:,start_len:]
+        toks = batched[:,start_len:]
         # now select the probability of each next toekn from our distribution
         toksv = toks.view((toks.shape[0], toks.shape[1], 1))
         # TODO(Ian): this doesnt explicitly happen in their objective function but
         # calculuting the probability in log form  the exp(-) to grab the ratio
         probs = torch.gather(preds, 2, toksv)
-        return torch.sum(torch.log(probs.view(probs.shape[0], probs.shape[1])), 1)
-   
+        aggregated =  torch.sum(torch.log(probs.view(probs.shape[0], probs.shape[1])), 1)
+        return aggregated.view((X.shape[0], X.shape[1]))
 
     def kl_divergence_penalty(self, state_curr, state_prev): 
         return torch.mean(state_prev * (torch.log(state_prev) - torch.log(state_curr)))
@@ -172,21 +185,23 @@ class GRPOTraining(L.LightningModule):
     # Note this function as written can only take a single prompt at shape
     # (1, T)
     def training_step(self, batch: torch.Tensor, _idx, training=True):
+        
         start_len = batch.shape[1]
-        repeated = batch.repeat(self.G, 1)
+        # batch: (B, T) -> (B, 1, T) -> (B, G, T)
+        repeated = batch.view(batch.shape[0], 1, start_len).repeat(1, self.G, 1)
         while not self.all_stopped(repeated):
             sels = self.predictions(repeated)
-            repeated = torch.cat((repeated, sels), 1)
-        scores = torch.func.vmap(self.score_input, 0, 0, randomness="different")(repeated).view(repeated.shape[0])
+            repeated = torch.cat((repeated, sels), 2)
+        scores = torch.func.vmap(self.score_input, 0, 0, randomness="different")(self.batch_tensor(repeated)).view(repeated.shape[0], repeated.shape[1])
         advantage = (scores - torch.mean(scores)) / torch.std(scores)
         old_probs = self.seq_to_probs(repeated, start_len).detach()
-        state_res = self.copy_mod(repeated)
+        state_res = self.copy_mod(self.batch_tensor(repeated))
         opt = None
         if training:
             opt = self.optimizers()
-        for i in range(self.grpo_steps):
+        for _ in range(self.grpo_steps):
             self.zero_grad()
-            state_curr = self.mod(repeated)
+            state_curr = self.mod(self.batch_tensor(repeated))
             new_probs = self.seq_to_probs(repeated, start_len)
             probs = torch.exp(new_probs - old_probs)
             flat_advantage = probs * advantage
@@ -196,6 +211,7 @@ class GRPOTraining(L.LightningModule):
             # is to take a heavily negative value in order to heavily reject
             # poor advantages and bias towards avoiding bad actions
             actual_advantage = torch.minimum(flat_advantage,clipped_adantage)
+            # TODO(Ian): is mean across groups fine here, seems ok to me tbh?
             clipped_loss = torch.mean(actual_advantage)
     
             if training:
@@ -242,9 +258,9 @@ def main():
     # print(re_embedded.shape)
     athd = GRPOTraining(500, 2, 2, 256, 4, False, 5, Tokenizer([STOP_TOKEN]),
                        max_tok_sq_len=20)
-    mat = torch.randint(0, 100, (1,5))
+    mat = torch.randint(0, 100, (10,5))
     #res = torch.randint(0,100, (2, 5))
-    #athd.training_step(mat, 1)
+    #athd.training_step(mat, 1, training=False)
     ldr = DataLoader(mat)
     #other = DataLoader(res)
     trainer = L.Trainer(detect_anomaly=False)

@@ -159,8 +159,8 @@ class GRPOTraining(L.LightningModule):
                 return True
 
         stop_ind = self.tokenizer.token_index(STOP_TOKEN)
-        tany = torch.any(torch.eq(X, stop_ind), 1)
-        return not torch.all(torch.logical_not(tany))
+        tany = torch.any(torch.eq(X.flatten(end_dim=1), stop_ind), 1)
+        return torch.all(tany)
     
 
     def batch_tensor(self, X: torch.Tensor):
@@ -168,17 +168,17 @@ class GRPOTraining(L.LightningModule):
         return batched
 
 
-    def predictions(self, X: torch.Tensor):
+    def predictions(self, X: torch.Tensor, pos):
         batched = self.batch_tensor(X)
         # batch preds
         # (G*B, T)
-        preds = self.mod(batched)[:, -1, :]
+        preds = self.mod((batched, pos))[:, -1, :]
         selected = torch.multinomial(preds, 1)
         shape_sel = selected.view(X.shape[0], X.shape[1], 1)
         return shape_sel
    
 
-    def seq_to_probs(self, X: torch.Tensor, start_len: int):
+    def seq_to_probs(self, X: torch.Tensor, start_len: int, pos):
         #X : (B, G, T)
         batched = self.batch_tensor(X)
         # we have Q_0 ... Q_N, T_0 ... T_L
@@ -186,7 +186,7 @@ class GRPOTraining(L.LightningModule):
         # so we want to subtract 1 to get the first token prob we consider as 
         # The next token T_0
         # we also do -1 to drop T_L since we dont have a next token
-        preds = self.mod(batched)[:,start_len-1:-1,:]
+        preds = self.mod((batched, pos))[:,start_len-1:-1,:]
         # now we select the next token index for each token
         toks = batched[:,start_len:]
         # now select the probability of each next toekn from our distribution
@@ -204,25 +204,35 @@ class GRPOTraining(L.LightningModule):
     # TODO(Ian): batching
     # Note this function as written can only take a single prompt at shape
     # (1, T)
-    def training_step(self, batch: torch.Tensor, _idx, training=True):
-        
+    def training_step(self, batch_pos: torch.Tensor, _idx, training=True):
+        batch, pos = batch_pos
+        # pos: (B, T)
         start_len = batch.shape[1]
         # batch: (B, T) -> (B, 1, T) -> (B, G, T)
         repeated = batch.view(batch.shape[0], 1, start_len).repeat(1, self.G, 1)
+        # (B*G, T)
+        repeated_pos = pos.view((pos.shape[0], 1 , pos.shape[1])).repeat(1, self.G, 1).flatten(end_dim=1)
+        print(repeated_pos.shape)
         while not self.all_stopped(repeated):
-            sels = self.predictions(repeated)
+            print("in loop")
+            sels = self.predictions(repeated, repeated_pos)
             repeated = torch.cat((repeated, sels), 2)
+            inc_last = repeated_pos[:,-1] + 1
+            print(repeated_pos)
+            repeated_pos = torch.cat((repeated_pos, inc_last.unsqueeze(-1)),1)
+            print(repeated_pos)
+            assert False
         scores = torch.func.vmap(self.score_input, 0, 0, randomness="different")(self.batch_tensor(repeated)).view(repeated.shape[0], repeated.shape[1])
         advantage = (scores - torch.mean(scores)) / torch.std(scores)
-        old_probs = self.seq_to_probs(repeated, start_len).detach()
-        state_res = self.copy_mod(self.batch_tensor(repeated))
+        old_probs = self.seq_to_probs(repeated, start_len, repeated_pos).detach()
+        state_res = self.copy_mod((self.batch_tensor(repeated), repeated_pos))
         opt = None
         if training:
             opt = self.optimizers()
         for _ in range(self.grpo_steps):
             self.zero_grad()
-            state_curr = self.mod(self.batch_tensor(repeated))
-            new_probs = self.seq_to_probs(repeated, start_len)
+            state_curr = self.mod((self.batch_tensor(repeated), repeated_pos))
+            new_probs = self.seq_to_probs(repeated, start_len, repeated_pos)
             probs = torch.exp(new_probs - old_probs)
             flat_advantage = probs * advantage
             clipped_prob = torch.clip(probs, 1 - self.epsilon, 1 + self.epsilon)
@@ -276,15 +286,15 @@ def main():
     # athd = MultiHeadedAttention(2,E)
     # re_embedded = athd(mat)
     # print(re_embedded.shape)
-    #athd = GRPOTraining(500, 2, 2, 256, 4, False, 5, Tokenizer([STOP_TOKEN]),
-    #                   max_tok_sq_len=20)
+    athd = GRPOTraining(500, 2, 2, 256, 4, False, 5, Tokenizer([STOP_TOKEN]),
+                       max_tok_sq_len=20)
     
-    tmodel = Model(500, 2, 2, 256, 4, True, 0.0)
-    mat = torch.randint(0, 100, (10,5))
-    pos = torch.randint(0, 5, (10, 5))
+    #tmodel = Model(500, 2, 2, 256, 4, True, 0.0)
+    mat = torch.randint(0, 100, (10,3))
+    pos = torch.randint(0, 5, (10, 3))
 
     #res = torch.randint(0,100, (2, 5))
-    #athd.training_step(mat, 1, training=False)
+    athd.training_step((mat, pos), 1, training=False)
     #ldr = DataLoader(mat)
     #other = DataLoader(res)
     #trainer = L.Trainer(detect_anomaly=False)

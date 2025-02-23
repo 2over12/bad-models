@@ -212,16 +212,12 @@ class GRPOTraining(L.LightningModule):
         repeated = batch.view(batch.shape[0], 1, start_len).repeat(1, self.G, 1)
         # (B*G, T)
         repeated_pos = pos.view((pos.shape[0], 1 , pos.shape[1])).repeat(1, self.G, 1).flatten(end_dim=1)
-        print(repeated_pos.shape)
         while not self.all_stopped(repeated):
-            print("in loop")
             sels = self.predictions(repeated, repeated_pos)
             repeated = torch.cat((repeated, sels), 2)
             inc_last = repeated_pos[:,-1] + 1
-            print(repeated_pos)
             repeated_pos = torch.cat((repeated_pos, inc_last.unsqueeze(-1)),1)
-            print(repeated_pos)
-            assert False
+
         scores = torch.func.vmap(self.score_input, 0, 0, randomness="different")(self.batch_tensor(repeated)).view(repeated.shape[0], repeated.shape[1])
         advantage = (scores - torch.mean(scores)) / torch.std(scores)
         old_probs = self.seq_to_probs(repeated, start_len, repeated_pos).detach()
@@ -294,10 +290,11 @@ def main():
     pos = torch.randint(0, 5, (10, 3))
 
     #res = torch.randint(0,100, (2, 5))
-    athd.training_step((mat, pos), 1, training=False)
-    #ldr = DataLoader(mat)
+    #athd.training_step((mat, pos), 1, training=False)
+    ldr = DataLoader(mat)
+    pos_ldr = DataLoader(pos)
     #other = DataLoader(res)
-    #trainer = L.Trainer(detect_anomaly=False)
-    #trainer.fit(athd, train_dataloaders=ldr)
+    trainer = L.Trainer(detect_anomaly=False)
+    trainer.fit(athd, train_dataloaders=(ldr, pos_ldr))
 if __name__ == "__main__":
     main()

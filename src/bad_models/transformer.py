@@ -301,7 +301,8 @@ class ModelBuilder:
 @hydra.main(version_base=None, config_path="configs", config_name="config.yaml")
 def train_base_model(cfg: DictConfig):
     mod = ModelBuilder(cfg).build()
-
+    trainer = L.Trainer(detect_anomaly=False)
+    trainer.fit(mod)
 
 # def main():
 #     # S = 1

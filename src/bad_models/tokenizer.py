@@ -1,22 +1,11 @@
 import pandas as pd
 import more_itertools
 from bad_models import dataset
+from bad_models.dataset import UNKNOWN_TOKEN, STOP_TOKEN, normalize, words
 from omegaconf import DictConfig
 import hydra
 from dataclasses import dataclass
 import json
-from pygtrie import PrefixSet
-
-UNKNOWN_TOKEN = "<UNK>"
-STOP_TOKEN = "<STOP>"
-
-def normalize(input: str):
-    noleads = input.strip()
-    return " ".join(noleads.split())
-
-def words(input:str) -> list[str]:
-    return input.split()
-
 
 def compute_word_freqs(words: list[str]) -> dict[str, int]:
     freqs = {}
@@ -98,51 +87,6 @@ def train_tokenizer_on_dataset(cfg: DictConfig):
     tokens =  bpe_train(list(ws), cfg.tokenizer.vocab_size)
     with open(cfg.tokenizer.dict, "w") as f:
         json.dump(list(tokens), f)
-
-
-class Tokenizer:
-    def __init__(self, tokens: list[str]):
-        self.trie = PrefixSet(tokens)
-        self.tokens = sorted(tokens)
-        self.token_to_ind = dict([(tok, i) for i, tok in enumerate(self.tokens)])
-
-
-    @staticmethod
-    def from_dict(cfg: DictConfig):
-        with open(cfg.tokenizer.dict, "r") as f:
-            return Tokenizer(json.load(f))
-
-    def get_tokens_for_wd(self, wd: str) -> list[str]:
-        total = []
-        curr_tok = ""
-        it = more_itertools.peekable(wd)
-        while it.peek(default=None) is not None:
-            tok = next(it)
-            curr_tok += tok
-            # in this case we restarted and are forced to UNK
-            if curr_tok not in self.trie:
-                is_UNK = True
-                while is_UNK:
-                    n = it.peek()
-                    is_UNK = n not in self.trie
-                    if is_UNK:
-                        next(it)
-                total.append(UNKNOWN_TOKEN)
-                curr_tok = ""
-                continue
-
-            nxt = it.peek()
-            if nxt is None or (curr_tok + nxt) not in self.trie:
-                total.append(curr_tok)
-                curr_tok = ""
-
-    def tokenize(self, input: str) -> list[str]:
-        normed = normalize(input)
-        wds = words(normed)
-        return [[tok for tok in self.get_tokens_for_wd(wd)] for wd in wds]
-
-    def token_index(self, tok: str) -> int | None:
-        return self.token_to_ind.get(tok, None)
 
 if __name__ == "__main__":
     train_tokenizer_on_dataset()

@@ -71,6 +71,9 @@ class Tokenizer:
     def token_index(self, tok: str) -> int | None:
         return self.token_to_ind.get(tok, None)
 
+
+
+
 class OrcaModule(L.LightningDataModule):
     def __init__(self, batch_size: int, toks: Tokenizer):
         super().__init__()
@@ -78,14 +81,14 @@ class OrcaModule(L.LightningDataModule):
         self.toks = toks
 
     def prepare_data(self):
+        toks = self.toks
         def tokenize(row):
             q = row["question"]
-            return {"question": [self.toks.token_index(x) for x in self.toks.tokenize(q)]}
-        ds = load_dataset(DATASET_NAME, split="train").map(tokenize)
-
+            return {"question": [toks.token_index(x) for x in toks.tokenize(q)]}
+        load_dataset(DATASET_NAME, split="train").map(tokenize)
 
     def train_dataloader(self):
-        return super().train_dataloader()
+        return load_dataset(DATASET_NAME, split="train")["question"]
 
 def main():
     tok = Tokenizer([UNKNOWN_TOKEN, STOP_TOKEN, "blah", "x", "foo"])

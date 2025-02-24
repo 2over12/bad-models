@@ -5,8 +5,10 @@ from torch import nn
 import lightning as L
 import math
 from torch.utils.data import DataLoader
-from tokenizer import Tokenizer, STOP_TOKEN
+from bad_models.tokenizer import Tokenizer, STOP_TOKEN
 import copy
+import hydra
+from omegaconf import DictConfig
 
 class MultiHeadedAttention(nn.Module):
     def __init__(self, num_heads: int, embedding_size):
@@ -283,29 +285,45 @@ class Trainable(L.LightningModule):
         optimizer = torch.optim.AdamW(self.parameters())
         return optimizer
 
+class ModelBuilder:
+    def __init__(self, cfg: DictConfig):
+        self.cfg = cfg
+
+    def build(self) -> Model:
+        return Model(self.cfg["tokenizer"]["vocab_size"], 
+                     self.cfg["transformer"]["num_decoders"],
+                     self.cfg["transformer"]["num_heads"],
+                     self.cfg["embeddings"]["size"],
+                     self.cfg["transformer"]["hidden_layer_factor"],
+                     self.cfg["transformer"]["bias"],
+                     self.cfg["transformer"]["dropout"])
+
+@hydra.main(version_base=None, config_path="configs", config_name="config.yaml")
+def train_base_model(cfg: DictConfig):
+    mod = ModelBuilder(cfg).build()
 
 
-def main():
-    # S = 1
-    # T = 3
-    E = 10
-    # mat = torch.rand((S, T, E))
-    #athd = MultiHeadedAttention(2,E)
-    # re_embedded = athd(mat)
-    # print(re_embedded.shape)
-    athd = GRPOTraining(500, 2, 2, 256, 4, False, 5, Tokenizer([STOP_TOKEN]),
-                       max_tok_sq_len=20)
+# def main():
+#     # S = 1
+#     # T = 3
+#     E = 10
+#     # mat = torch.rand((S, T, E))
+#     #athd = MultiHeadedAttention(2,E)
+#     # re_embedded = athd(mat)
+#     # print(re_embedded.shape)
+#     athd = GRPOTraining(500, 2, 2, 256, 4, False, 5, Tokenizer([STOP_TOKEN]),
+#                        max_tok_sq_len=20)
     
-    tmodel = Model(500, 2, 2, 256, 4, True, 0.0)
-    mat = torch.randint(0, 100, (10,3))
-    pos = torch.randint(0, 5, (10, 3))
-    masks = torch.arange(0, 3).unsqueeze(0).repeat(10, 1)
-    #res = torch.randint(0,100, (2, 5))
-    #athd.training_step((mat, pos), 1, training=False)
-    ldr = DataLoader(mat)
-    pos_ldr = DataLoader(pos)
-    #other = DataLoader(res)
-    trainer = L.Trainer(detect_anomaly=False)
-    trainer.fit(athd, train_dataloaders=(ldr, pos_ldr, DataLoader(masks)))
-if __name__ == "__main__":
-    main()
+#     tmodel = Model(500, 2, 2, 256, 4, True, 0.0)
+#     mat = torch.randint(0, 100, (10,3))
+#     pos = torch.randint(0, 5, (10, 3))
+#     masks = torch.arange(0, 3).unsqueeze(0).repeat(10, 1)
+#     #res = torch.randint(0,100, (2, 5))
+#     #athd.training_step((mat, pos), 1, training=False)
+#     ldr = DataLoader(mat)
+#     pos_ldr = DataLoader(pos)
+#     #other = DataLoader(res)
+#     trainer = L.Trainer(detect_anomaly=False)
+#     trainer.fit(athd, train_dataloaders=(ldr, pos_ldr, DataLoader(masks)))
+# if __name__ == "__main__":
+#     main()

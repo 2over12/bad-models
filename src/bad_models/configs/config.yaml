@@ -1,0 +1,5 @@
+defaults:
+  - tokenizer: small
+  - dataset: small
+  - transformer: small
+  - embeddings: small

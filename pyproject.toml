@@ -16,10 +16,20 @@ dependencies = [
     "torch>=2.6.0",
 ]
 
+[project.scripts]
+transformer = "bad_models.transformer:train_base_model"
 
 [tool.uv.sources]
 torch = { index = "pytorch" }
 
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bad_models"]
+
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [[tool.uv.index]]
 # Optional name for the index.
@@ -28,6 +38,4 @@ url = "https://download.pytorch.org/whl/rocm6.2.4"
 default = false
 
 [dependency-groups]
-dev = [
-    "dvc>=3.59.1",
-]
+dev = ["dvc>=3.59.1"]

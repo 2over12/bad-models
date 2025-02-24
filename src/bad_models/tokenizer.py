@@ -1,6 +1,6 @@
 import pandas as pd
 import more_itertools
-import dataset
+from bad_models import dataset
 from omegaconf import DictConfig
 import hydra
 from dataclasses import dataclass

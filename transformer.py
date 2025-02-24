@@ -21,7 +21,8 @@ class MultiHeadedAttention(nn.Module):
         # S,T,E-> S,H,T E//H
         return X.view((X.shape[0], X.shape[1], self.H, X.shape[2]//self.H)).transpose(1,2)
 
-    def forward(self, X):
+    def forward(self, X, mask: torch.Tensor | None =None):
+        # mask: (S, H, T)
         # E: embedding size
         # T: seq size 
         query = self.split_heads(self.Q(X))
@@ -43,10 +44,15 @@ class MultiHeadedAttention(nn.Module):
         #print(to_mask_indices)
         norm_scores[:,:, to_mask_indices[0], to_mask_indices[1]] = -torch.inf
 
-        # (S, H, T,T)
+        # (S, H, T, T)
         attn_matrix = torch.softmax(norm_scores, dim=dims-2)
+        if mask is not None:
+            mask = mask.unsqueeze(1).unsqueeze(1).repeat(1, self.H, T, 1)
+
+        masked_attn_matrix = attn_matrix * mask if mask is not None else attn_matrix
+ 
         # (S, H, T, T) * (S, H, T, E//T) - >(S, H, T, E//T)
-        values = torch.matmul(attn_matrix, value)
+        values = torch.matmul(masked_attn_matrix, value)
         # flip the heads so that each head is next to it
         cont = values.transpose(1,2)#.contiguous()
         concats = cont.reshape(X.shape[0], T, self.embedding_size)
@@ -79,8 +85,8 @@ class Decoder(nn.Module):
         self.lnorm1 = nn.LayerNorm(self.embedding_size)
         self.lnorm2 = nn.LayerNorm(self.output_size)
 
-    def forward(self, X):
-        attn = self.heads(self.lnorm1(X))
+    def forward(self, X, mask=None):
+        attn = self.heads(self.lnorm1(X), mask=mask)
         activation = self.pointwise_ff(self.lnorm2(attn))
         return activation
 
@@ -116,11 +122,11 @@ class Model(nn.Module):
         return embs.view((shp[0], shp[1], self.embedding_size))
 
 
-    def forward(self, X_idxs_and_pos):
-        X_idxs, pos = X_idxs_and_pos
+    def forward(self, X_idxs_and_pos_mask):
+        X_idxs, pos, mask = X_idxs_and_pos_mask
         embs = self.embedding(X_idxs) + self.pos_embeddings(pos)
         for dec in self.decs:
-            embs = dec(embs)
+            embs = dec(embs, mask=mask)
         classed = self.classifier(self.norm(embs))
         maxed = torch.nn.functional.softmax(classed, 2)
         return maxed
@@ -168,17 +174,17 @@ class GRPOTraining(L.LightningModule):
         return batched
 
 
-    def predictions(self, X: torch.Tensor, pos):
+    def predictions(self, X: torch.Tensor, pos, mask):
         batched = self.batch_tensor(X)
         # batch preds
         # (G*B, T)
-        preds = self.mod((batched, pos))[:, -1, :]
+        preds = self.mod((batched, pos, mask))[:, -1, :]
         selected = torch.multinomial(preds, 1)
         shape_sel = selected.view(X.shape[0], X.shape[1], 1)
         return shape_sel
    
 
-    def seq_to_probs(self, X: torch.Tensor, start_len: int, pos):
+    def seq_to_probs(self, X: torch.Tensor, start_len: int, pos, mask):
         #X : (B, G, T)
         batched = self.batch_tensor(X)
         # we have Q_0 ... Q_N, T_0 ... T_L
@@ -186,7 +192,7 @@ class GRPOTraining(L.LightningModule):
         # so we want to subtract 1 to get the first token prob we consider as 
         # The next token T_0
         # we also do -1 to drop T_L since we dont have a next token
-        preds = self.mod((batched, pos))[:,start_len-1:-1,:]
+        preds = self.mod((batched, pos, mask))[:,start_len-1:-1,:]
         # now we select the next token index for each token
         toks = batched[:,start_len:]
         # now select the probability of each next toekn from our distribution
@@ -205,30 +211,35 @@ class GRPOTraining(L.LightningModule):
     # Note this function as written can only take a single prompt at shape
     # (1, T)
     def training_step(self, batch_pos: torch.Tensor, _idx, training=True):
-        batch, pos = batch_pos
+        batch, pos, mask = batch_pos
         # pos: (B, T)
         start_len = batch.shape[1]
         # batch: (B, T) -> (B, 1, T) -> (B, G, T)
         repeated = batch.view(batch.shape[0], 1, start_len).repeat(1, self.G, 1)
         # (B*G, T)
         repeated_pos = pos.view((pos.shape[0], 1 , pos.shape[1])).repeat(1, self.G, 1).flatten(end_dim=1)
+        # (B*G, T)
+        repeated_mask = mask.view((mask.shape[0], 1 , mask.shape[1])).repeat(1, self.G, 1).flatten(end_dim=1)
+
         while not self.all_stopped(repeated):
-            sels = self.predictions(repeated, repeated_pos)
+            sels = self.predictions(repeated, repeated_pos, repeated_mask)
             repeated = torch.cat((repeated, sels), 2)
             inc_last = repeated_pos[:,-1] + 1
             repeated_pos = torch.cat((repeated_pos, inc_last.unsqueeze(-1)),1)
+            added = torch.ones((repeated_mask.shape[0], 1))
+            repeated_mask = torch.cat((repeated_mask, added), 1)
 
         scores = torch.func.vmap(self.score_input, 0, 0, randomness="different")(self.batch_tensor(repeated)).view(repeated.shape[0], repeated.shape[1])
         advantage = (scores - torch.mean(scores)) / torch.std(scores)
-        old_probs = self.seq_to_probs(repeated, start_len, repeated_pos).detach()
-        state_res = self.copy_mod((self.batch_tensor(repeated), repeated_pos))
+        old_probs = self.seq_to_probs(repeated, start_len, repeated_pos, repeated_mask).detach()
+        state_res = self.copy_mod((self.batch_tensor(repeated), repeated_pos, repeated_mask))
         opt = None
         if training:
             opt = self.optimizers()
         for _ in range(self.grpo_steps):
             self.zero_grad()
-            state_curr = self.mod((self.batch_tensor(repeated), repeated_pos))
-            new_probs = self.seq_to_probs(repeated, start_len, repeated_pos)
+            state_curr = self.mod((self.batch_tensor(repeated), repeated_pos, repeated_mask))
+            new_probs = self.seq_to_probs(repeated, start_len, repeated_pos, repeated_mask)
             probs = torch.exp(new_probs - old_probs)
             flat_advantage = probs * advantage
             clipped_prob = torch.clip(probs, 1 - self.epsilon, 1 + self.epsilon)
@@ -277,24 +288,24 @@ class Trainable(L.LightningModule):
 def main():
     # S = 1
     # T = 3
-    # E = 10
+    E = 10
     # mat = torch.rand((S, T, E))
-    # athd = MultiHeadedAttention(2,E)
+    #athd = MultiHeadedAttention(2,E)
     # re_embedded = athd(mat)
     # print(re_embedded.shape)
     athd = GRPOTraining(500, 2, 2, 256, 4, False, 5, Tokenizer([STOP_TOKEN]),
                        max_tok_sq_len=20)
     
-    #tmodel = Model(500, 2, 2, 256, 4, True, 0.0)
+    tmodel = Model(500, 2, 2, 256, 4, True, 0.0)
     mat = torch.randint(0, 100, (10,3))
     pos = torch.randint(0, 5, (10, 3))
-
+    masks = torch.arange(0, 3).unsqueeze(0).repeat(10, 1)
     #res = torch.randint(0,100, (2, 5))
     #athd.training_step((mat, pos), 1, training=False)
     ldr = DataLoader(mat)
     pos_ldr = DataLoader(pos)
     #other = DataLoader(res)
     trainer = L.Trainer(detect_anomaly=False)
-    trainer.fit(athd, train_dataloaders=(ldr, pos_ldr))
+    trainer.fit(athd, train_dataloaders=(ldr, pos_ldr, DataLoader(masks)))
 if __name__ == "__main__":
     main()

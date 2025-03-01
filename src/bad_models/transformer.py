@@ -159,8 +159,13 @@ class GRPOTraining(L.LightningModule):
         self.kl_div_weight = kl_div_weight
     
     # TODO(Ian): make this abstract
+    # This is just like stubbedish format requirement
     def score_input(self, row: torch.Tensor) -> bool:
-        return torch.randint(0, 10, (1,), dtype=torch.float)
+        lst = row.clone().detach().tolist()
+        built_string: str = " ".join(self.tokenizer.decode(lst))
+        start = built_string.startswith("<thinking>")
+        end = "</thinking>" in built_string
+        return torch.tensor([5.0 if start and end else 0.0])
 
     def all_stopped(self, X: torch.Tensor) -> bool:
         if self.max_tok_sq_len is not None and X.shape[2] >= self.max_tok_sq_len:
@@ -208,6 +213,15 @@ class GRPOTraining(L.LightningModule):
     def kl_divergence_penalty(self, state_curr, state_prev): 
         return torch.mean(state_prev * (torch.log(state_prev) - torch.log(state_curr)))
 
+    
+    
+    def score_batch(self, batch: torch.Tensor):
+        tot = []
+        for row in batch:
+            tot.append(self.score_input(row))
+        
+        return torch.cat(tot)
+
     # TODO(Ian): padding mask here
     # TODO(Ian): batching
     # Note this function as written can only take a single prompt at shape
@@ -231,7 +245,7 @@ class GRPOTraining(L.LightningModule):
             added = torch.ones((repeated_mask.shape[0], 1))
             repeated_mask = torch.cat((repeated_mask, added), 1)
 
-        scores = torch.func.vmap(self.score_input, 0, 0, randomness="different")(self.batch_tensor(repeated)).view(repeated.shape[0], repeated.shape[1])
+        scores = self.score_batch(self.batch_tensor(repeated)).view(repeated.shape[0], repeated.shape[1])
         advantage = (scores - torch.mean(scores)) / torch.std(scores)
         old_probs = self.seq_to_probs(repeated, start_len, repeated_pos, repeated_mask).detach()
         state_res = self.copy_mod((self.batch_tensor(repeated), repeated_pos, repeated_mask))
@@ -299,7 +313,7 @@ class ModelBuilder:
     def __init__(self, cfg: DictConfig):
         self.cfg = cfg
 
-    def build(self) -> Model:
+    def build(self) -> Trainable:
         return Trainable(self.cfg["tokenizer"]["vocab_size"], 
                      self.cfg["transformer"]["num_decoders"],
                      self.cfg["transformer"]["num_heads"],
@@ -307,12 +321,35 @@ class ModelBuilder:
                      self.cfg["transformer"]["hidden_layer_factor"],
                      self.cfg["transformer"]["bias"],
                      self.cfg["transformer"]["dropout"])
+    
+class GRPOBuilder:
+    def __init__(self, cfg: DictConfig):
+        self.cfg = cfg
+
+    def build(self, toks: Tokenizer) -> GRPOTraining:
+        return GRPOTraining(self.cfg["tokenizer"]["vocab_size"], 
+                     self.cfg["transformer"]["num_decoders"],
+                     self.cfg["transformer"]["num_heads"],
+                     self.cfg["embeddings"]["size"],
+                     self.cfg["transformer"]["hidden_layer_factor"],
+                     self.cfg["transformer"]["bias"],
+                     self.cfg["transformer"]["group_size"], toks,
+                     max_tok_sq_len=self.cfg["transformer"]["max_grpo_seq_len"])
 
 @hydra.main(version_base=None, config_path="configs", config_name="config.yaml")
 def train_base_model(cfg: DictConfig):
     mod = ModelBuilder(cfg).build()
     trainer = L.Trainer(detect_anomaly=False)
     trainer.fit(mod, train_dataloaders=OrcaModule(10, Tokenizer.from_file("tokens.txt")))
+
+
+@hydra.main(version_base=None, config_path="configs", config_name="config.yaml")
+def train_grpo(cfg: DictConfig):
+    toks = Tokenizer.from_file("tokens.txt")
+    mod = GRPOBuilder(cfg).build(toks)
+    trainer = L.Trainer(detect_anomaly=False)
+    trainer.fit(mod, train_dataloaders=OrcaModule(10, toks))
+
 
 # def main():
 #     # S = 1
@@ -340,4 +377,4 @@ def train_base_model(cfg: DictConfig):
 #     main()
 
 if __name__ == "__main__":
-    train_base_model()
+    train_grpo()

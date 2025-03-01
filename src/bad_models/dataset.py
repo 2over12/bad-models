@@ -38,7 +38,7 @@ class Tokenizer:
     def __init__(self, tokens: list[str]):
         self.trie = PrefixSet(tokens)
         self.tokens = sorted(tokens)
-        self.token_to_ind = dict([(tok, i) for i, tok in enumerate(self.tokens)])
+        self.token_to_ind = dict([(tok, i) for i, tok in enumerate(self.tokens)])\
 
     def set_contains(self, wd: str) -> bool:
         res = self.trie._trie.longest_prefix(wd)
@@ -73,6 +73,9 @@ class Tokenizer:
                     total.append(curr_tok)
                     curr_tok = ""
         return total
+
+    def decode(self, toks: list[int]) -> list[str]:
+        return [self.tokens[x] for x in toks]
 
     def tokenize(self, input: str, add_stop=True) -> list[str]:
         normed = normalize(input)

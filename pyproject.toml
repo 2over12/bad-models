@@ -38,4 +38,7 @@ url = "https://download.pytorch.org/whl/rocm6.2.4"
 default = false
 
 [dependency-groups]
-dev = ["dvc>=3.59.1"]
+dev = [
+    "dvc>=3.59.1",
+    "ipython>=9.0.0",
+]

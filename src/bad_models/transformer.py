@@ -5,7 +5,7 @@ from torch import nn
 import lightning as L
 import math
 from torch.utils.data import DataLoader
-from bad_models.tokenizer import Tokenizer, STOP_TOKEN
+from bad_models.dataset import Tokenizer, STOP_TOKEN, OrcaModule
 import copy
 import hydra
 from omegaconf import DictConfig
@@ -272,11 +272,21 @@ class Trainable(L.LightningModule):
 
     # TODO(Ian): padding mask here
     def training_step(self, batch, _idx):
-        x, y = batch
-        res = self.mod(x)
+        seqs, pos, mask = batch
+        # Seqs: B *  L
+        # the next tokens are shifted forward 1
+        y = seqs[:,1:]
 
-        xres = res.view(res.shape[0]*res.shape[1], res.shape[2])
-        yres = y.view((res.shape[0]*res.shape[1],))
+        # we trim the last token since there is no nex token
+        res = self.mod((seqs, pos, mask))
+        # res: B * L * C
+
+        # mask based on the future reshaped to make multipication work
+        rep_mask = mask[:,1:].unsqueeze(2).repeat(1,1,res.shape[2])
+        # mask the gradients on predictions that should predict pad
+        trimres = res[:, :-1, :]*rep_mask
+        xres = trimres.reshape(trimres.shape[0]*trimres.shape[1], trimres.shape[2])
+        yres = y.reshape((trimres.shape[0]*trimres.shape[1],))
         return torch.nn.functional.cross_entropy(xres, yres)
 
 
@@ -290,7 +300,7 @@ class ModelBuilder:
         self.cfg = cfg
 
     def build(self) -> Model:
-        return Model(self.cfg["tokenizer"]["vocab_size"], 
+        return Trainable(self.cfg["tokenizer"]["vocab_size"], 
                      self.cfg["transformer"]["num_decoders"],
                      self.cfg["transformer"]["num_heads"],
                      self.cfg["embeddings"]["size"],
@@ -302,7 +312,7 @@ class ModelBuilder:
 def train_base_model(cfg: DictConfig):
     mod = ModelBuilder(cfg).build()
     trainer = L.Trainer(detect_anomaly=False)
-    trainer.fit(mod)
+    trainer.fit(mod, train_dataloaders=OrcaModule(10, Tokenizer.from_file("tokens.txt")))
 
 # def main():
 #     # S = 1
@@ -328,3 +338,6 @@ def train_base_model(cfg: DictConfig):
 #     trainer.fit(athd, train_dataloaders=(ldr, pos_ldr, DataLoader(masks)))
 # if __name__ == "__main__":
 #     main()
+
+if __name__ == "__main__":
+    train_base_model()

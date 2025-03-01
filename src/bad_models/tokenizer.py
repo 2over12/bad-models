@@ -1,7 +1,7 @@
 import pandas as pd
 import more_itertools
 from bad_models import dataset
-from bad_models.dataset import UNKNOWN_TOKEN, STOP_TOKEN, normalize, words
+from bad_models.dataset import UNKNOWN_TOKEN, STOP_TOKEN, PAD_TOKEN, normalize, words
 from omegaconf import DictConfig
 import hydra
 from dataclasses import dataclass
@@ -61,6 +61,7 @@ def bpe_train(words: list[str], target_vocab_size: int) -> set[str]:
     vocab = base_tokens(words) 
     vocab.add(UNKNOWN_TOKEN)
     vocab.add(STOP_TOKEN)
+    vocab.add(PAD_TOKEN)
     split_words = {wd: [ch for ch in wd] for wd in words}
     word_freqs = compute_word_freqs(words)
     while len(vocab) < target_vocab_size:

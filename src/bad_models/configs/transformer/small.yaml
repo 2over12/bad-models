@@ -5,3 +5,4 @@ bias: true
 dropout: .1
 group_size: 3
 max_grpo_seq_len: 20
+lora_rank: 10

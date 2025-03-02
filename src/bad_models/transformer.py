@@ -11,25 +11,38 @@ import hydra
 from omegaconf import DictConfig
 
 class MultiHeadedAttention(nn.Module):
-    def __init__(self, num_heads: int, embedding_size):
+    def __init__(self, num_heads: int, embedding_size, lora_rank=None):
         super().__init__()
         self.embedding_size = embedding_size
         self.Q = nn.Linear(embedding_size,embedding_size)
         self.K = nn.Linear(embedding_size,embedding_size)
         self.V = nn.Linear(embedding_size,embedding_size)
+        self.LQ = LoraLayer(embedding_size, embedding_size, lora_rank)
+        self.LK = LoraLayer(embedding_size, embedding_size, lora_rank)
+        self.LV = LoraLayer(embedding_size, embedding_size, lora_rank)
+        if lora_rank is not None:
+            self.Q.requires_grad_(False)
+            self.K.requires_grad_(False)
+            self.V.requires_grad_(False)
+
         self.H = num_heads
 
     def split_heads(self, X: torch.Tensor):
         # S,T,E-> S,H,T E//H
         return X.view((X.shape[0], X.shape[1], self.H, X.shape[2]//self.H)).transpose(1,2)
 
+    
+    def apply_kqv(self, X, linear: nn.Linear, lora: "LoraLayer"):
+        prev_res = linear(X)
+        return lora(X, prev_res)
+
     def forward(self, X, mask: torch.Tensor | None =None):
         # mask: (S, H, T)
         # E: embedding size
         # T: seq size 
-        query = self.split_heads(self.Q(X))
-        key =  self.split_heads(self.K(X))
-        value =  self.split_heads(self.V(X))
+        query = self.split_heads(self.apply_kqv(X, self.Q, self.LQ))
+        key =  self.split_heads(self.apply_kqv(X, self.K, self.LK))
+        value =  self.split_heads(self.apply_kqv(X, self.V, self.LV))
         # (S,H,T,E//H) (S,H,E//H, T)
         dims = query.ndim
         T_dim = dims-2
@@ -72,36 +85,60 @@ class FeedForwardNetwork(nn.Module):
         proj = self.projections(self.gelu(mid))
         return self.drop(proj)
 
+
+class LoraLayer(nn.Module):
+    def __init__(self, input_size, output_size, rank):
+        super().__init__()
+        self.A = None
+        self.B = None
+        if rank is not None:
+            self.A = nn.Linear(input_size, rank, bias=False)
+            self.B = nn.Linear(rank, output_size, bias=False)
+        
+
+    def forward(self, X, prev_res):
+        if self.A is None or self.B is None:
+            return prev_res
+        return self.B(self.A(X)) + prev_res
+
+
 class Decoder(nn.Module):
     def __init__(self, num_heads, embedding_size, hidden_layer_factor: int,
-                  bias: bool, dropout: float):
+                  bias: bool, dropout: float, lora_rank=None):
         super().__init__()
         self.embedding_size = embedding_size
         self.num_head = num_heads
         self.output_size = self.embedding_size
-        self.heads = MultiHeadedAttention(num_heads, embedding_size)
+        self.heads = MultiHeadedAttention(num_heads, embedding_size, lora_rank=lora_rank)
         self.pointwise_ff = FeedForwardNetwork(self.output_size, 
                                             hidden_layer_factor, 
                                             self.embedding_size,
                                             bias, dropout)
+        
+        if lora_rank is not None:
+            self.pointwise_ff.requires_grad_(False)
+
+        self.lora_layer_ff = LoraLayer(self.output_size, self.embedding_size, lora_rank)
+
         self.lnorm1 = nn.LayerNorm(self.embedding_size)
         self.lnorm2 = nn.LayerNorm(self.output_size)
 
     def forward(self, X, mask=None):
         attn = self.heads(self.lnorm1(X), mask=mask)
-        activation = self.pointwise_ff(self.lnorm2(attn))
-        return activation
+        x = self.lnorm2(attn)
+        activation = self.pointwise_ff(x)
+        return self.lora_layer_ff(x, activation)
 
 class Model(nn.Module):
     def __init__(self,  vocab_size, num_decoders, num_heads, 
                  embedding_size, hidden_layer_factor: int,
-                  bias: bool, dropout: float):
+                  bias: bool, dropout: float, lora_rank=None):
         super().__init__()
         self.embedding_size  = embedding_size
         self.embedding = nn.Embedding(vocab_size, embedding_size)
 
         self.decs = [Decoder(num_heads, embedding_size, hidden_layer_factor,
-                             bias, dropout) for _ in range(num_decoders)]
+                             bias, dropout, lora_rank=lora_rank) for _ in range(num_decoders)]
         self.norm = nn.LayerNorm(embedding_size)
         self.classifier = nn.Linear(embedding_size, vocab_size, bias)
 
@@ -138,7 +175,7 @@ class GRPOTraining(L.LightningModule):
     def __init__(self, vocab_size, num_decoders, num_heads, 
                  embedding_size, hidden_layer_factor: int,
                   bias: bool, G: int, tokenizer: Tokenizer,
-                  grpo_steps=10,
+                  grpo_steps=10, lora_rank = None,
                   max_tok_sq_len=None, dropout=0.0, epsilon=.2, kl_div_weight=.5):
         super().__init__()
         self.automatic_optimization = False
@@ -148,7 +185,7 @@ class GRPOTraining(L.LightningModule):
         # stabilizes a bit in training maybe it's ideal? somebody probably knows
         self.mod = Model(vocab_size, num_decoders, num_heads, 
                  embedding_size, hidden_layer_factor,
-                  bias, dropout)
+                  bias, dropout, lora_rank=lora_rank)
         self.copy_mod = copy.deepcopy(self.mod)
         self.copy_mod.requires_grad_(False)
         self.G = G
@@ -334,7 +371,8 @@ class GRPOBuilder:
                      self.cfg["transformer"]["hidden_layer_factor"],
                      self.cfg["transformer"]["bias"],
                      self.cfg["transformer"]["group_size"], toks,
-                     max_tok_sq_len=self.cfg["transformer"]["max_grpo_seq_len"])
+                     max_tok_sq_len=self.cfg["transformer"]["max_grpo_seq_len"],
+                     lora_rank=self.cfg["transformer"].get("lora_rank", None))
 
 @hydra.main(version_base=None, config_path="configs", config_name="config.yaml")
 def train_base_model(cfg: DictConfig):

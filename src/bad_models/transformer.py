@@ -136,11 +136,16 @@ class Model(nn.Module):
         super().__init__()
         self.embedding_size  = embedding_size
         self.embedding = nn.Embedding(vocab_size, embedding_size)
-
         self.decs = [Decoder(num_heads, embedding_size, hidden_layer_factor,
                              bias, dropout, lora_rank=lora_rank) for _ in range(num_decoders)]
         self.norm = nn.LayerNorm(embedding_size)
         self.classifier = nn.Linear(embedding_size, vocab_size, bias)
+        self.class_lora = LoraLayer(embedding_size, vocab_size, lora_rank)
+        # TODO(Ian): This seems right to me? on finetuning freeze the embedding
+        if lora_rank is not None:
+            self.embedding.requires_grad_(False)
+            self.classifier.requires_grad_(False)
+        
 
     def pos_embeddings(self, positions: torch.Tensor):
         # (B, T) we allow arbitrary positions in order to allow shifting pads etc
@@ -166,7 +171,8 @@ class Model(nn.Module):
         embs = self.embedding(X_idxs) + self.pos_embeddings(pos)
         for dec in self.decs:
             embs = dec(embs, mask=mask)
-        classed = self.classifier(self.norm(embs))
+        x = self.norm(embs)
+        classed = self.class_lora(x, self.classifier(x))
         maxed = torch.nn.functional.softmax(classed, 2)
         return maxed
 
